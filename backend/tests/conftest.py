@@ -1,0 +1,4 @@
+import os,sys
+from pathlib import Path
+os.environ["DATABASE_URL"]="sqlite:////tmp/katha-test.db"
+sys.path.insert(0,str(Path(__file__).parents[1]))
