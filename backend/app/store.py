@@ -6,6 +6,7 @@ from .config import settings
 class SessionRepository:
  def get(self,id): raise NotImplementedError
  def save(self,s): raise NotImplementedError
+ def exists(self,id): raise NotImplementedError
 class SQLiteLikeJsonRepository(SessionRepository):
  """SQLite persistence behind a replaceable repository contract."""
  def __init__(self,path=None):
@@ -20,6 +21,10 @@ class SQLiteLikeJsonRepository(SessionRepository):
  def get(self,id):
   with sqlite3.connect(self.path) as db: row=db.execute("SELECT payload FROM sessions WHERE id=?",(id,)).fetchone()
   return Session.model_validate_json(row[0]) if row else Session(id=id)
+ def exists(self,id):
+  with sqlite3.connect(self.path) as db:return db.execute("SELECT 1 FROM sessions WHERE id=?",(id,)).fetchone() is not None
+ def create(self,id):
+  session=Session(id=id);self.save(session);return session
  def save(self,s):
   with sqlite3.connect(self.path) as db: db.execute("INSERT INTO sessions(id,payload) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload, updated_at=CURRENT_TIMESTAMP",(s.id,s.model_dump_json()))
   return s

@@ -3,8 +3,8 @@ import type {ReactNode} from "react";
 
 export const languages={"hi-en":"Hindi / Hinglish","te-en":"Telugu + English","bn-en":"Bengali + English"} as const;
 
-export function Header({language,onLanguage,demoOpen,onDemo}:{language:keyof typeof languages;onLanguage:(value:keyof typeof languages)=>void;demoOpen:boolean;onDemo:()=>void}){
- return <header className="nav"><a className="brand" href="#top" aria-label="KATHA home">KATHA <small>Human-to-Institution Accessibility Fabric</small></a><div className="nav-actions"><label className="sr-only" htmlFor="language">Language mode</label><select id="language" value={language} onChange={e=>onLanguage(e.target.value as keyof typeof languages)}>{Object.entries(languages).map(([key,label])=><option value={key} key={key}>{label}</option>)}</select><button className={`demo-nav ${demoOpen?"active":""}`} onClick={onDemo} aria-expanded={demoOpen}>Demo</button></div></header>
+export function Header({language,onLanguage,demoOpen,onDemo,onNewApplication}:{language:keyof typeof languages;onLanguage:(value:keyof typeof languages)=>void;demoOpen:boolean;onDemo:()=>void;onNewApplication:()=>void}){
+ return <header className="nav"><a className="brand" href="#top" aria-label="KATHA home">KATHA <small>Human-to-Institution Accessibility Fabric</small></a><div className="nav-actions"><label className="sr-only" htmlFor="language">Language mode</label><select id="language" value={language} onChange={e=>onLanguage(e.target.value as keyof typeof languages)}>{Object.entries(languages).map(([key,label])=><option value={key} key={key}>{label}</option>)}</select><button className="new-application" onClick={onNewApplication}>New Application</button><button className={`demo-nav ${demoOpen?"active":""}`} onClick={onDemo} aria-expanded={demoOpen}>Demo</button></div></header>
 }
 
 export function HeroInteraction({speechAvailable,recording,seconds,busy,onSpeak,onType,onEvidence}:{speechAvailable:boolean;recording:boolean;seconds:number;busy:boolean;onSpeak:()=>void;onType:()=>void;onEvidence:()=>void}){

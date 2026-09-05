@@ -4,6 +4,7 @@ c=TestClient(app)
 def test_correction_and_shared_state():
  sid="api-shared";c.post(f"/api/demo/reset/{sid}?scenario=initial")
  r=c.post("/api/corrections",json={"session_id":sid,"heard_value":"VIT Valor","corrected_value":"VIT Vellore","concept":"college_name","language":"hi-en","verified":True});assert r.status_code==200
+ assert any(f["source_type"]=="user_correction" and f["status"]=="STATED" for f in r.json()["application"]["facts"])
  a=c.post("/api/access-point/interact",json={"session_id":sid,"language":"hi-en","text":"I study at VIT Valor"});assert a.status_code==200
  web=c.get(f"/api/session/{sid}").json();assert any(f["value"]=="VIT Vellore" for f in web["facts"]);assert set(["ui_state","resolved","missing","uncertain","conflicts","tts_audio_url"]) <= set(a.json())
 def test_upload_fixture():
