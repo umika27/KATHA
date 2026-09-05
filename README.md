@@ -1,365 +1,146 @@
 # KATHA
-# KATHA
 
-**A Human-to-Institution Accessibility Fabric**
+KATHA is a Human-to-Institution Accessibility Fabric. People describe their reality through speech, text, and documents; institutions demand structured fields and proof. This scholarship MVP keeps those layers separate and makes every unresolved or verified value visible.
 
-> Speak. Show. Understand. Prove. Access.
-
-KATHA turns human reality into machine-verifiable access. A person should not need the right language, accent, typing ability, digital literacy, or understanding of bureaucracy to access a digital service — the system adapts to the person instead.
-
----
-
-## Table of Contents
-
-- [The Problem](#the-problem)
-- [What KATHA Is](#what-katha-is)
-- [Core Concept](#core-concept)
-- [System Architecture](#system-architecture)
-- [Hardware — KATHA Access Node](#hardware--katha-access-node)
-- [Key Features](#key-features)
-- [Tech Stack](#tech-stack)
-- [Repository Structure](#repository-structure)
-- [Getting Started](#getting-started)
-- [Demo Scenario](#demo-scenario)
-- [What Makes KATHA Different](#what-makes-katha-different)
-- [Scope of the MVP](#scope-of-the-mvp)
-- [Roadmap](#roadmap)
-- [Design Principles](#design-principles)
-- [License](#license)
-
----
-
-## The Problem
-
-Digital access today is structured around **forms**. But a form isn't really asking for "fields" — it's asking a person to perform a chain of difficult tasks:
-
-- Understand formal or bureaucratic terminology
-- Convert their situation into structured fields
-- Know which evidence is required, and whether it's valid
-- Repeat the same information across multiple portals
-- Resolve contradictions and navigate conditional questions
-- Communicate in the "right" language and pronunciation
-- Avoid a mistake that could cause rejection
-
-This means **even eligible people can fail to access services** they qualify for.
-
-The real problem isn't "people have difficulty filling forms." It's that **institutions encode access as rigid digital structures, while people communicate through stories, incomplete information, documents, and speech — and there is no persistent semantic layer between the two.**
-
-That is the gap KATHA fills.
-
----
-
-## What KATHA Is
-
-KATHA is a **Human-to-Institution Accessibility Fabric** delivered through three coordinated surfaces, all powered by the same semantic engine:
-
-| Surface | Description |
-|---|---|
-| **KATHA Platform** | Web app for uploading forms, discovering opportunities, managing evidence, and completing applications |
-| **KATHA Live** | A browser extension that overlays intelligence directly onto existing institutional websites |
-| **KATHA Access Node** | A physical edge device for help desks, libraries, NGOs, and public service centres |
-
-The user never has to learn three different systems — KATHA carries the same verified meaning across all of them.
-
----
-
-## Core Concept
-
-KATHA does not treat a **form** as the fundamental unit of work — it treats the **underlying requirement** as the unit of work.
-
-A PDF might ask *"Aggregate annual household earnings,"* a website might ask *"Gross parental income per annum,"* and another portal might ask *"Annual family income."* To KATHA, all three represent the same concept: `annual_household_income`. This makes KATHA **interface-independent** — different forms can look completely different while representing the same human facts.
-
-### KIR — KATHA Intermediate Representation
-
-KIR sits between the person and the institution:
-
-```
-HUMAN SIDE                    INSTITUTION SIDE
-speech / documents /    ↔ KIR ↔    PDF / website /
-corrections / touch                rules / schemas
+```text
+Next.js browser ─────┐
+                     ├── FastAPI / KATHA Core ── SQLite
+Kivy Access Point ───┘          │
+                                └── Sarvam STT/TTS (optional)
 ```
 
-This separates **what the person means**, **what the institution requires**, and **how the current interface happens to display it**.
+FastAPI is the only source of truth. Both clients use the same `session_id`; refreshing the browser or opening the lightweight Raspberry Pi client reads the same persisted state. The SPI TFT does not run Chromium or the web platform.
 
-### Requirement Graph & Evidence Graph
+## What works
 
-- **Requirement Graph** — compiled from any form/PDF/website: required facts, eligibility constraints, dependencies, accepted evidence, and conditional rules.
-- **Evidence Graph** — built from the human side: facts with full **provenance** (source, confidence, verification status, timestamp, expiry).
+- Typed Hindi/Hinglish, Telugu + English, and Bengali + English demo narratives mapped to one canonical concept registry
+- Browser MediaRecorder → FastAPI → Sarvam Saaras v4 → the same deterministic semantic extractor used by typed input
+- Sarvam Bulbul v3 response playback, with text-only fallback on failure
+- Explicit `VERIFIED`, `STATED`, `UNCERTAIN`, `MISSING`, and `CONFLICT` states
+- Text-PDF/basic deterministic extraction and fictional fixture documents with provenance
+- Minimum-question answers, correction memory, Preflight, and shared SQLite sessions
+- Five demo states: INITIAL, PARTIAL, CONFLICT, MISSING_PROOF, READY
+- Native Kivy Access Point simulator, independent of display/touch drivers
 
-### Proof-Carrying Applications
+No application is submitted automatically.
 
-Every consequential answer traces a full chain:
+## Repository
 
-```
-Claim → Evidence → Requirement → Decision
-```
+- `backend/app` — API, models, deterministic engines, services, configuration, persistence
+- `backend/tests` — domain, API, mocked Sarvam, and end-to-end demo tests
+- `frontend` — Next.js application journey and typed API client
+- `access_point` — Kivy simulator and hardware-neutral input adapter
+- `scripts/test_sarvam.py` — manual-only live Sarvam check
+- `docs/ACCESS_POINT_API.md` — stable Raspberry Pi API contract
 
-So for any filled value, KATHA can answer: *"Why is this here?"*
+## Environment
 
-### Requirement ↔ Evidence Matching
+Copy `.env.example` to `.env`. Never commit `.env` or expose `SARVAM_API_KEY` through a `NEXT_PUBLIC_` variable.
 
-Every requirement resolves into one of four states:
-
-| State | Meaning |
-|---|---|
-| ✓ **PROVEN** | Sufficient, valid evidence exists |
-| ? **UNCERTAIN** | Something is known, but needs clarification |
-| ○ **MISSING** | Required fact or evidence is absent |
-| ⚠ **CONFLICT** | Two sources disagree |
-
-### Bureaucracy Compression
-
-KATHA only asks what's genuinely unresolved:
-
-```
-31 fields → 17 resolved from evidence → 6 reused → 3 derived → 2 removed by rules
-                                                        ↓
-                                          Only 3 actually require the user
-```
-
-Quantified as the **Human Burden Ratio (HBR)**:
-
-```
-HBR = new facts requiring human input / total requirements
+```dotenv
+SARVAM_API_KEY=
+DATABASE_URL=sqlite:///./data/katha.db
+CORS_ORIGINS=http://localhost:3000
+SARVAM_STT_MODEL=saaras:v4
+SARVAM_TTS_MODEL=bulbul:v3
+SARVAM_STT_MODE=transcribe
+SARVAM_TIMEOUT_SECONDS=30
 ```
 
-Lower is better — this makes accessibility a measurable engineering outcome, not just a claim.
+Copy `frontend/.env.example` to `frontend/.env.local`:
 
----
-
-## System Architecture
-
-```
-                        USER
-                          │
-        ┌─────────┬───────┼───────┬─────────┐
-        Voice     Touch   Document   Text
-                          │
-                          ▼
-              KATHA EDGE RUNTIME
-        (audio preprocessing, personal lexicon,
-         local session, evidence cache,
-         deterministic rules, sync manager)
-                          │
-                          ↕
-                  KATHA CLOUD
-     (Sarvam STT/TTS, multilingual interpretation,
-      document intelligence, semantic extraction)
-                          │
-                          ▼
-                    KATHA IR
-          (Evidence Graph + Requirement Graph)
-                          │
-                          ▼
-              Reasoning + Preflight
-                          │
-        ┌─────────────────┼─────────────────┐
-     Platform          Extension        Access Node
+```dotenv
+NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
 ```
 
-**Guiding principle:** *AI interprets. Deterministic systems decide.*
+Without a Sarvam key, the application starts normally and identifies itself as typed mode. Typed interaction, fixture evidence, shared state, and Preflight remain functional. Speech buttons do not fake success.
 
-- **AI** handles: speech interpretation, semantic mapping proposals, document understanding, jargon explanation.
-- **Deterministic logic** handles: validation, requirement states, evidence sufficiency, rule evaluation, contradictions, readiness, and submission gating.
-
-This is what keeps KATHA trustworthy rather than a black box that quietly guesses.
-
----
-
-## Hardware — KATHA Access Node
-
-A physical, two-tier system designed to be buildable without custom PCBs or embedded UI work.
-
-```
-┌─────────────────────┐   Serial/WiFi   ┌──────────────────────────┐
-│   ESP32 DEV KIT       │◄──────────────►│         LAPTOP             │
-│  (Physical Layer)     │                 │   (Compute + UI Layer)     │
-│  • Push-to-talk button │                │  • Camera (doc capture)    │
-│  • Status LED           │                │  • Microphone / Speaker     │
-└─────────────────────┘                 │  • Browser (KATHA UI)       │
-                                          │  • Backend (FastAPI)        │
-                                          └──────────────────────────┘
-```
-
-- **ESP32** acts purely as a tactile front panel: reads the push-to-talk button, drives the status LED (ready / listening / processing / confirm), and sends/receives simple event codes to the laptop over USB serial or WiFi.
-- **Laptop** does all the real work: camera capture for documents, microphone/speaker for voice interaction, and renders the actual KATHA Platform UI in a browser.
-- **Resilient Edge Mode:** if connectivity drops, already-verified facts, cached session state, and deterministic rules keep working locally; cloud-only tasks queue and sync once connectivity returns.
-
-Full component list, wiring notes, and communication protocol are in [`/hardware/README.md`](./hardware/README.md).
-
----
-
-## Key Features
-
-- **KATHA Adapt** — learns the user's pronunciation, code-switching habits, and vocabulary over time (e.g., a misheard "VIT Valor" is corrected once to "VIT Vellore" and never mismatched again).
-- **Multimodal personalization** — verified document text (e.g., an ID) can correct uncertain speech recognition.
-- **No silent guessing** — approximate or uncertain claims are stored as such (`income ≈ ₹4L, status: approximate`) and never silently promoted to official values for high-stakes fields.
-- **Minimum Question Planner** — asks the single question or requests the single document that resolves the most outstanding requirements at once.
-- **Access Path Planning** — surfaces the smallest legitimate next step that unlocks the most access across multiple opportunities.
-- **KATHA Preflight** — a pre-submission check for missing evidence, expired documents, contradictions, and unresolved requirements before anything is submitted.
-- **KATHA Lens** — overlays plain-language explanations directly on confusing form fields (meaning, why it's needed, what proves it, current status).
-- **Ask the Form** — lets users interrogate the process itself ("Why are they asking this?", "What's blocking me?"), answered by tracing the Requirement Graph.
-- **KATHA Focus Mode** — hides everything already resolved, showing only what still needs the user's attention.
-- **Cross-device continuity** — a fact verified at a physical Access Node is instantly recognized later on a laptop via the browser extension.
-- **Semantic Process Diff** *(secondary)* — compares two versions of a process (e.g., a scheme's 2025 vs 2026 rules) semantically, not as a text diff.
-
----
-
-## Tech Stack
-
-| Layer | Technology |
-|---|---|
-| Frontend | Next.js, React, TypeScript, Tailwind CSS |
-| Browser Extension | Chrome Extension (Manifest V3) |
-| Backend | FastAPI (Python) |
-| Data Contracts | Pydantic (`Claim`, `Evidence`, `Requirement`, `KIRNode`, `ApplicationState`) |
-| Speech | Sarvam AI (multilingual Indian-language STT/TTS) |
-| Documents | PDF / OCR / document extraction pipeline |
-| Storage | PostgreSQL / Supabase |
-| Edge Compute | Python edge service (on laptop or Raspberry Pi, as applicable) |
-| Edge Local Storage | SQLite |
-| Hardware | ESP32 Dev Kit (button, LED), laptop (camera, mic, speaker, display) |
-
----
-
-## Repository Structure
-
-```
-katha/
-├── platform/           # Next.js web application
-├── extension/          # KATHA Live browser extension (Manifest V3)
-├── backend/            # FastAPI services — reasoning, graphs, rules
-│   ├── models/         # Pydantic contracts (Claim, Evidence, Requirement, KIR)
-│   ├── graphs/          # Requirement Graph + Evidence Graph logic
-│   ├── compiler/        # PDF / website → Requirement Graph compiler
-│   └── preflight/       # Preflight validation engine
-├── hardware/            # ESP32 firmware + Access Node build guide
-│   ├── firmware/        # Arduino/ESP-IDF button + LED + serial/WiFi code
-│   └── laptop-listener/ # Python listener script (serial/HTTP)
-├── data/                # Synthetic/demo schemas and fixtures
-└── docs/                # Architecture notes, schemas, demo script
-```
-
----
-
-## Getting Started
-
-> This is a hackathon MVP — setup steps below are illustrative and should be adjusted to match the actual repo once code is in place.
+## Backend
 
 ```bash
-# Clone the repository
-git clone https://github.com/<your-org>/katha.git
-cd katha
-
-# Backend
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r backend/requirements.txt
 cd backend
-pip install -r requirements.txt
-uvicorn main:app --reload
-
-# Platform (frontend)
-cd ../platform
-npm install
-npm run dev
-
-# Browser Extension
-cd ../extension
-npm install
-npm run build
-# then load /extension/dist as an unpacked extension in Chrome
-
-# Hardware (optional)
-# Flash /hardware/firmware to the ESP32 Dev Kit via Arduino IDE
-# Run the laptop-side listener:
-cd ../hardware/laptop-listener
-python listener.py
+uvicorn app.main:app --reload --port 8000
 ```
 
-Environment variables (Sarvam API keys, database URL, etc.) go in a `.env` file — see `.env.example`.
+Swagger is available at `http://localhost:8000/docs`.
 
----
+```bash
+cd backend
+../.venv/bin/python -m pytest -q
+```
 
-## Demo Scenario
+SQLite schema initialization and the current additive migration run automatically. Demo sessions are not deleted on startup.
 
-A short walkthrough of the intended live demo:
+## Frontend
 
-1. **Paper** — a fictional scholarship form is shown to the Access Node's camera; KATHA compiles it into a Requirement Graph.
-2. **Speak** — the push-to-talk button is pressed; a user speaks naturally in a code-mixed Indian language.
-3. **Personalize** — KATHA mishears a local proper noun, the user corrects it once, and KATHA remembers it going forward.
-4. **Show** — a fictional income certificate is captured; the value is extracted and marked as document-verified.
-5. **Handle conflict safely** — spoken "around four lakh" vs. a certificate's exact value is reconciled without hallucinating a false match.
-6. **Compress** — the interface animates from "27 visible fields" down to "only 2 questions for you."
-7. **Preflight** — a missing certificate blocks submission until resolved; once uploaded, the application becomes ready.
-8. **Cross-device** — the same verified facts are recognized moments later on a completely different web application via the browser extension.
-9. **Adaptation payoff** — the earlier-corrected term is now recognized correctly the first time.
-10. **Technical reveal** — clicking "Why is this application ready?" expands the full Requirement → Claim → Evidence → Rule chain.
+```bash
+cd frontend
+cp .env.example .env.local
+npm install
+npm run dev
+```
 
-> All demo documents, names, and figures are **fictional and synthetic**, created solely for demonstration purposes.
+Verification:
 
----
+```bash
+npm run lint
+npm run typecheck
+npm run build
+```
 
-## What Makes KATHA Different
+Browser recordings are capped below Sarvam REST’s 30-second limit. Current Saaras documentation lists WebM, WAV, MP3, AAC, AIFF, OGG/Opus, FLAC and several other supported formats.
 
-Existing tools already offer translation, OCR, speech-to-text, PDF autofill, browser autofill, and chatbots. KATHA's contribution is the **semantic layer above all of these**:
+## Manual Sarvam test
 
-1. Interface-independent semantic representation (KIR)
-2. Requirement Graph compiled from any form/PDF/website
-3. Evidence Graph with full provenance
-4. Requirement ↔ Evidence matching with explicit uncertainty states
-5. Proof-Carrying Applications
-6. Bureaucracy Compression (measurable via HBR)
-7. Personalized semantic adaptation (not just accent correction)
-8. Minimum-action planning across requirements and opportunities
-9. Preflight rejection prevention
-10. Continuity across physical device, browser extension, and platform
-11. Hybrid edge-cloud architecture with resilient offline behavior
-12. Semantic portability across unrelated institutions
+This command makes one paid/live STT request. It is never invoked by pytest:
 
----
+```bash
+.venv/bin/python scripts/test_sarvam.py path/to/recording.webm
+```
 
-## Scope of the MVP
+Add `--tts` to also write a short synthesized response:
 
-**In scope for the hackathon build:**
-- One deep, end-to-end scholarship workflow
-- PDF/image form input → Requirement Graph
-- Multilingual narrative extraction → Evidence Graph
-- Document evidence with provenance and conflict handling
-- Bureaucracy Compression + minimum-question logic
-- Preflight validation
-- Platform + browser extension
-- ESP32 + laptop Access Node
-- Correction memory and cross-device state reuse
+```bash
+.venv/bin/python scripts/test_sarvam.py path/to/recording.wav --tts --language hi-IN --output /tmp/katha-tts.wav
+```
 
-**Explicitly out of scope (to protect focus):**
-- Custom acoustic models or fully offline STT
-- Custom PCBs or bespoke hardware
-- Biometric voice identity
-- Auto-submission to real institutional portals
-- A generic autonomous browser agent or open-ended RAG chatbot
+The script exits non-zero for missing credentials, missing files, authentication failure, unavailable credits, invalid audio, rate limiting, timeout, or provider errors.
 
----
+## Kivy Access Point
 
-## Roadmap
+```bash
+cd access_point
+cp config.example.json config.json
+pip install -r requirements.txt
+python main.py
+```
 
-Starting in **education** (scholarships, admissions, fee waivers, financial aid) because it's relatable and testable, then extending the same engine — only the requirement schemas change — to:
+Set `BACKEND_URL`, `DEFAULT_LANGUAGE`, `SCREEN_WIDTH`, and `SCREEN_HEIGHT` in `config.json`. Use `KATHA_SESSION_ID=demo-01` to share the browser session. Actual framebuffer, touch controller, microphone, packaging, and autostart remain hardware-team work.
 
-- Public services and government benefits
-- Employment and onboarding
-- Insurance and banking
-- NGO intake and welfare programs
+## Demo walkthrough
 
----
+1. Start FastAPI and Next.js, then open `http://localhost:3000`.
+2. Open Developer Demo Controls and select INITIAL or PARTIAL.
+3. Choose a language and speak for less than 28 seconds, or use the clearly marked typed example.
+4. Inspect the original transcript and canonical facts. Approximate ₹4 lakh remains uncertain.
+5. Add the fictional income certificate. The exact ₹3,82,400 document value becomes verified while the approximate prior claim remains visible.
+6. Add student and domicile evidence, then answer the minimum remaining questions.
+7. Watch the question count decrease and Preflight become READY FOR REVIEW.
+8. Refresh the browser or open Kivy with `demo-01`; both retrieve the same SQLite session.
 
-## Design Principles
+## API overview
 
-- **Uncertain information never silently becomes official information.**
-- **AI interprets. Deterministic systems decide.**
-- **Move meaning, not unnecessary raw data** — minimize persistent storage of raw audio/documents.
-- **The system adapts to the person — not the other way around.**
+- `GET /api/health`, `GET /api/config`
+- `GET /api/session/{session_id}`
+- `POST /api/interactions/text`, `POST /api/interactions/speech`
+- `POST /api/tts`, `POST /api/answers`
+- `POST /api/documents/upload`, `POST /api/corrections`
+- `POST /api/access-point/interact`
+- `POST /api/demo/reset/{session_id}` (development/demo only)
 
----
+## Honest limitations
 
-> *You shouldn't have to learn how the system speaks. The system should learn how you do.*
-
-## License
-
-_Add your chosen license here (e.g., MIT, Apache 2.0)._
+Semantic extraction remains deliberately rule-based and demo-scoped. Uploaded images are accepted by the UI but return an unknown extraction result because OCR/Document AI is not implemented. Only deterministic fixtures and safely parsed text produce document facts. AI-extracted values must not become verified without KATHA provenance rules. Authentication, encryption/retention controls, production PostgreSQL, offline sync, general form parsing, and browser extensions are out of scope.

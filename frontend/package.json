@@ -1,0 +1,1 @@
+{"name":"katha-web","private":true,"scripts":{"dev":"next dev","build":"next build","lint":"next lint","typecheck":"tsc --noEmit"},"dependencies":{"next":"14.2.35","react":"18.3.1","react-dom":"18.3.1"},"devDependencies":{"@types/node":"latest","@types/react":"18.3.28","@types/react-dom":"18.3.7","eslint":"8.57.1","eslint-config-next":"14.2.35","typescript":"5.6.3"}}
