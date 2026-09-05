@@ -6,16 +6,17 @@ KATHA is a Human-to-Institution Accessibility Fabric. People describe their real
 Next.js browser ─────┐
                      ├── FastAPI / KATHA Core ── SQLite
 Kivy Access Point ───┘          │
-                                └── Sarvam STT/TTS (optional)
+                                └── Sarvam STT + 105B semantics + TTS (optional)
 ```
 
 FastAPI is the only source of truth. Both clients use the same `session_id`; refreshing the browser or opening the lightweight Raspberry Pi client reads the same persisted state. The SPI TFT does not run Chromium or the web platform.
 
 ## What works
 
-- Typed Hindi/Hinglish, Telugu + English, and Bengali + English demo narratives mapped to one canonical concept registry
-- Browser MediaRecorder → FastAPI → Sarvam Saaras v4 → the same deterministic semantic extractor used by typed input
+- Typed Hindi/Hinglish, Telugu + English, and Bengali + English narratives mapped by Sarvam 105B to one strict canonical schema
+- Browser MediaRecorder → FastAPI → Sarvam Saaras v4 → the same semantic pipeline used by typed input
 - Sarvam Bulbul v3 response playback, with text-only fallback on failure
+- Transcript and candidate-fact correction controls; correction memory is supplied to future semantic turns
 - Explicit `VERIFIED`, `STATED`, `UNCERTAIN`, `MISSING`, and `CONFLICT` states
 - Text-PDF/basic deterministic extraction and fictional fixture documents with provenance
 - Minimum-question answers, correction memory, Preflight, and shared SQLite sessions
@@ -30,7 +31,8 @@ No application is submitted automatically.
 - `backend/tests` — domain, API, mocked Sarvam, and end-to-end demo tests
 - `frontend` — Next.js application journey and typed API client
 - `access_point` — Kivy simulator and hardware-neutral input adapter
-- `scripts/test_sarvam.py` — manual-only live Sarvam check
+- `scripts/test_sarvam_live.py` — manual-only live text/audio/TTS check
+- `docs/SARVAM_INTEGRATION.md` — provider boundary, fallbacks, environment, and live verification
 - `docs/ACCESS_POINT_API.md` — stable Raspberry Pi API contract
 
 ## Environment
@@ -42,9 +44,14 @@ SARVAM_API_KEY=
 DATABASE_URL=sqlite:///./data/katha.db
 CORS_ORIGINS=http://localhost:3000
 SARVAM_STT_MODEL=saaras:v4
+SARVAM_CHAT_MODEL=sarvam-105b
 SARVAM_TTS_MODEL=bulbul:v3
 SARVAM_STT_MODE=transcribe
 SARVAM_TIMEOUT_SECONDS=30
+SARVAM_ENABLED=true
+SARVAM_SEMANTIC_ENABLED=true
+SARVAM_TTS_ENABLED=true
+SARVAM_DOC_AI_ENABLED=false
 ```
 
 Copy `frontend/.env.example` to `frontend/.env.local`:
@@ -53,7 +60,7 @@ Copy `frontend/.env.example` to `frontend/.env.local`:
 NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
 ```
 
-Without a Sarvam key, the application starts normally and identifies itself as typed mode. Typed interaction, fixture evidence, shared state, and Preflight remain functional. Speech buttons do not fake success.
+Without a Sarvam key—or when Sarvam semantic extraction fails—the application starts normally and uses the narrow rule-based extractor as an explicit fallback. Fixture evidence, shared state, and deterministic Preflight remain functional. Speech buttons do not fake success.
 
 ## Backend
 
@@ -95,16 +102,17 @@ Browser recordings are capped below Sarvam REST’s 30-second limit. Current Saa
 
 ## Manual Sarvam test
 
-This command makes one paid/live STT request. It is never invoked by pytest:
+These commands make paid/live requests. They are never invoked by pytest:
 
 ```bash
-.venv/bin/python scripts/test_sarvam.py path/to/recording.webm
+.venv/bin/python scripts/test_sarvam_live.py --text "Mere ghar ki yearly income lagbhag 4 lakh hai"
+.venv/bin/python scripts/test_sarvam_live.py --audio path/to/recording.webm
 ```
 
 Add `--tts` to also write a short synthesized response:
 
 ```bash
-.venv/bin/python scripts/test_sarvam.py path/to/recording.wav --tts --language hi-IN --output /tmp/katha-tts.wav
+.venv/bin/python scripts/test_sarvam_live.py --audio path/to/recording.wav --tts --language hi-en --output /tmp/katha-tts.wav
 ```
 
 The script exits non-zero for missing credentials, missing files, authentication failure, unavailable credits, invalid audio, rate limiting, timeout, or provider errors.
@@ -143,4 +151,4 @@ Set `BACKEND_URL`, `DEFAULT_LANGUAGE`, `SCREEN_WIDTH`, and `SCREEN_HEIGHT` in `c
 
 ## Honest limitations
 
-Semantic extraction remains deliberately rule-based and demo-scoped. Uploaded images are accepted by the UI but return an unknown extraction result because OCR/Document AI is not implemented. Only deterministic fixtures and safely parsed text produce document facts. AI-extracted values must not become verified without KATHA provenance rules. Authentication, encryption/retention controls, production PostgreSQL, offline sync, general form parsing, and browser extensions are out of scope.
+Sarvam semantic extraction is constrained to the scholarship registry and has a narrow rule fallback, not a general form ontology. Document AI is feature-gated but intentionally unimplemented; uploaded images do not fake extraction. Only deterministic fixtures and safely parsed text produce document facts. AI-extracted values never become verified without KATHA provenance rules. Authentication, encryption/retention controls, production PostgreSQL, offline sync, general form parsing, and browser extensions are out of scope.

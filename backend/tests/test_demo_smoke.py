@@ -13,10 +13,11 @@ def test_complete_demo_journey_and_shared_state():
  assert start["preflight"]["status"]=="NOT_READY"
  typed=client.post("/api/interactions/text",json={"session_id":sid,"language":"hi-en","text":"Main VIT Vellore mein second year student hoon. Family income around 4 lakh hai."}).json()
  concepts={f["concept"] for f in typed["extracted_candidate_facts"]}
- assert {"college_name","year_of_study","student_status","annual_household_income"} <= concepts
+ assert {"college_name","year_of_study","student_status","household_income"} <= concepts
  before=client.get(f"/api/session/{sid}").json()
  income=next(r for r in before["resolutions"] if r["requirement_id"]=="req-7")
- assert income["status"]=="UNCERTAIN"
+ assert income["status"]=="MISSING"
+ assert before["questions"][0]["type"]=="clarification"
  question_count=len(before["questions"])
  assert upload(sid,"income_certificate").json()["status"]=="VERIFIED"
  after_income=client.get(f"/api/session/{sid}").json()

@@ -8,7 +8,9 @@ from pydantic import BaseModel
 from .models import *
 from .workflow import scholarship_requirements
 from .core import resolve_all,questions,preflight
-from .services import RuleBasedSemanticExtractionService,BasicDocumentService,build_speech_service,SpeechServiceError
+from .services import RuleBasedSemanticExtractionService,BasicDocumentService,SarvamSpeechService,SpeechServiceError
+from .sarvam_service import SarvamService
+from .semantic_pipeline import SemanticPipeline
 from .store import SQLiteLikeJsonRepository
 from .fixtures import fixture
 from .concepts import LANGUAGES
@@ -17,60 +19,154 @@ from .config import settings
 app=FastAPI(title="KATHA Core",version="0.1.0")
 app.add_middleware(CORSMiddleware,allow_origins=list(settings.cors_origins),allow_methods=["*"],allow_headers=["*"])
 audio_dir=Path("data/audio");audio_dir.mkdir(parents=True,exist_ok=True);app.mount("/api/audio",StaticFiles(directory=audio_dir),name="audio")
-repo=SQLiteLikeJsonRepository(); extractor=RuleBasedSemanticExtractionService(); docs=BasicDocumentService(); speech=build_speech_service(); reqs=scholarship_requirements()
-class Interaction(BaseModel): session_id:str; language:str="hi-en"; text:str
+repo=SQLiteLikeJsonRepository(); extractor=RuleBasedSemanticExtractionService(); docs=BasicDocumentService(); provider=SarvamService();speech=SarvamSpeechService(settings,provider.client) if provider.configured else SarvamSpeechService(settings);semantic_pipeline=SemanticPipeline(provider,extractor);reqs=scholarship_requirements()
+class Interaction(BaseModel):
+ application_id:str|None=None
+ session_id:str|None=None
+ language_mode:str|None=None
+ language:str|None=None
+ text:str
+class QuestionInteraction(Interaction): question_concept:str; question_text:str
 class CorrectionIn(BaseModel): session_id:str; heard_value:str; corrected_value:str; concept:str; language:str="hi-en"; verified:bool=True
 class AnswerIn(BaseModel): session_id:str; concept:str; value:str|int|float|bool; approximate:bool=False
-class TTSIn(BaseModel): text:str; language:str="hi-en"
+class IncomePeriodIn(BaseModel): application_id:str; fact_id:str; period:str
+class TTSIn(BaseModel): application_id:str|None=None; text:str; language_mode:str|None=None; language:str|None=None
 
 TTS_LANG={"hi-en":"hi-IN","te-en":"te-IN","bn-en":"bn-IN"}
 
 def state(id):
- s=repo.get(id); resolutions=resolve_all(reqs,s); pf=preflight(reqs,resolutions); qs=questions(reqs,resolutions)
- return {"session_id":id,"application":{"id":"scholarship-demo","application_type":"student_scholarship","title":"KATHA Educational Support Scholarship","requirements":[r.model_dump() for r in reqs],"readiness":pf["status"],"resolved_count":pf["resolved"],"missing_count":pf["missing"],"uncertain_count":pf["uncertain"],"conflict_count":pf["conflicts"]},"facts":[f.model_dump() for f in s.facts],"evidence":[e.model_dump() for e in s.evidence],"resolutions":[r.model_dump() for r in resolutions],"questions":[q.model_dump() for q in qs],"next_question":qs[0].question if qs else None,"preflight":pf,"corrections":[c.model_dump() for c in s.corrections]}
+ s=repo.get(id); resolutions=resolve_all(reqs,s); pf=preflight(reqs,resolutions); qs=questions(reqs,resolutions,s)
+ return {"application_id":id,"session_id":id,"application":{"id":id,"program_id":"educational-support-scholarship","application_type":"student_scholarship","title":"KATHA Educational Support Scholarship","requirements":[r.model_dump() for r in reqs],"readiness":pf["status"],"resolved_count":pf["resolved"],"missing_count":pf["missing"],"uncertain_count":pf["uncertain"],"conflict_count":pf["conflicts"]},"facts":[f.model_dump() for f in s.facts],"evidence":[e.model_dump() for e in s.evidence],"resolutions":[r.model_dump() for r in resolutions],"questions":[q.model_dump() for q in qs],"next_question":qs[0].question if qs else None,"preflight":pf,"corrections":[c.model_dump() for c in s.corrections]}
 @app.get("/api/health")
 def health(): return {"status":"ok","languages":LANGUAGES,"speech_available":speech.available,"database":"sqlite"}
 @app.get("/api/config")
-def public_config(): return {"languages":LANGUAGES,"speech_available":speech.available,"stt_model":settings.sarvam_stt_model if speech.available else None,"tts_model":settings.sarvam_tts_model if speech.available else None,"max_recording_seconds":28}
+def public_config():
+ return {"languages":LANGUAGES,"sarvamConfigured":provider.configured,"speechEnabled":provider.speech_enabled,"semanticExtractionEnabled":provider.semantic_enabled,"ttsEnabled":provider.tts_enabled,"documentAIEnabled":provider.document_ai_enabled,"speech_available":provider.speech_enabled,"max_recording_seconds":28}
 @app.get("/api/session/{session_id}")
 def session(session_id:str): return state(session_id)
+@app.post("/api/applications",status_code=201)
+def create_application():
+ application_id=str(uuid4());repo.create(application_id);return state(application_id)
+@app.get("/api/applications/{application_id}")
+def get_application(application_id:str):
+ if not repo.exists(application_id):raise HTTPException(404,"Application not found")
+ return state(application_id)
+@app.post("/api/applications/{application_id}/reset")
+def reset_application(application_id:str):
+ if not repo.exists(application_id):raise HTTPException(404,"Application not found")
+ repo.reset(application_id,Session(id=application_id));return state(application_id)
 @app.post("/api/interactions/text")
 def interact(body:Interaction):
- if body.language not in LANGUAGES: raise HTTPException(422,"Unsupported language")
- s=repo.get(body.session_id); normalized,facts=extractor.extract(body.text,s.corrections); s.facts.extend(facts); repo.save(s); result=state(body.session_id)
- return {"session_id":body.session_id,"normalized_text":normalized,"extracted_candidate_facts":[f.model_dump() for f in facts],"application_summary":result["application"],"next_question":result["next_question"],"response_text":f"I understood {len(facts)} detail(s)." if facts else "I could not safely extract a new fact. You can answer the next question."}
+ return process_semantic_interaction(body,"user_statement")
+
+def process_semantic_interaction(body:Interaction,source_type:str,question_context=None):
+ application_id=body.application_id or body.session_id
+ language=body.language_mode or body.language or "hi-en"
+ if not application_id:raise HTTPException(422,{"code":"missing_application_id","message":"No active application was provided."})
+ if not repo.exists(application_id):raise HTTPException(404,{"code":"application_not_found","message":"The active application no longer exists. Create a new application and try again."})
+ if language not in LANGUAGES:raise HTTPException(422,{"code":"unsupported_language","message":"Unsupported language mode."})
+ text=body.text.strip()
+ if not text:raise HTTPException(422,{"code":"invalid_input","message":"Tell KATHA something about your scholarship application first."})
+ s=repo.get(application_id);before=resolve_all(reqs,s);normalized,facts,ignored,outcome=semantic_pipeline.extract(text,s,reqs,before,language,source_type,question_context)
+ if question_context:
+  expected=question_context["concept"]
+  compatible={"household_income","annual_household_income"} if expected in {"household_income","annual_household_income"} else {expected}
+  rejected=[f for f in facts if f.concept not in compatible]
+  ignored.extend({"fact":f.model_dump(mode="json"),"reason":"does_not_answer_current_question"} for f in rejected)
+  facts=[f for f in facts if f.concept in compatible]
+  if expected=="household_income":
+   period=next((f.period for f in facts if f.period in {"monthly","annual"}),None)
+   if not period:
+    low=text.casefold()
+    if any(w in low for w in ["month","mahine","mahina","monthly"]):period="monthly"
+    elif any(w in low for w in ["year","annual","saal","yearly","per year"]):period="annual"
+   if period:
+    facts=apply_income_period(s,question_context.get("fact_id"),period,save=False)
+ s.facts.extend(facts);repo.save(s);result=state(application_id)
+ fallback=f"I understood {len(facts)} detail(s)." if facts else "I could not safely extract a new fact. You can answer the next question."
+ if not facts and outcome.semantic_success and not outcome.fallback_used:
+  fallback="I understood your message, but I couldn't map any of it to the information this scholarship needs yet."
+ response_text=fallback if outcome.fallback_used or not facts else provider.generate_response({"applied_facts":[{"concept":f.concept,"value":f.normalized_value,"status":f.status,"approximate":f.precision==Precision.approximate} for f in facts],"next_question":result["next_question"],"preflight":result["preflight"]},fallback,language)
+ return {"application_id":application_id,"session_id":application_id,"normalized_text":normalized,"semantic":outcome.model_dump(mode="json"),"applied_facts":[f.model_dump() for f in facts],"ignored_facts":ignored,"extracted_candidate_facts":[f.model_dump() for f in facts],"application":result,"application_summary":result["application"],"next_question":result["questions"][0] if result["questions"] else None,"response_text":response_text}
 @app.post("/api/interactions/speech")
-async def speech_interact(session_id:str=Form(...),language:str=Form(...),file:UploadFile=File(...)):
+async def speech_interact(session_id:str=Form(...),language:str=Form("hi-en"),file:UploadFile=File(...)):
  if language not in LANGUAGES: raise HTTPException(422,"Unsupported language")
  content=await file.read()
  if len(content)>15_000_000: raise HTTPException(413,"Audio file is too large.")
  try: result=speech.transcribe(content,file.filename or "recording.webm",file.content_type)
  except SpeechServiceError as exc: raise HTTPException(503,{"code":exc.code,"message":str(exc),"retryable":exc.retryable}) from exc
- typed=interact(Interaction(session_id=session_id,language=language,text=result.text));audio_url=None;tts_error=None
+ typed=process_semantic_interaction(Interaction(application_id=session_id,language_mode=language,text=result.text),"speech_transcript");audio_url=None;tts_error=None
  try:
   audio=speech.synthesize(typed["response_text"],TTS_LANG[language]);name=f"{uuid4()}.wav";(audio_dir/name).write_bytes(audio);audio_url=f"/api/audio/{name}"
  except SpeechServiceError as exc: tts_error={"code":exc.code,"message":str(exc)}
- return {"session_id":session_id,"transcript":result.text,"detected_language":result.detected_language,"candidate_facts":typed["extracted_candidate_facts"],"application_summary":typed["application_summary"],"next_question":typed["next_question"],"response_text":typed["response_text"],"audio_url":audio_url,"tts_error":tts_error}
+ return {"session_id":session_id,"transcript":result.text,"detected_language":result.detected_language,"semantic":typed["semantic"],"applied_facts":typed["applied_facts"],"ignored_facts":typed["ignored_facts"],"candidate_facts":typed["applied_facts"],"application":typed["application"],"application_summary":typed["application_summary"],"next_question":typed["next_question"],"response_text":typed["response_text"],"audio_url":audio_url,"tts_error":tts_error}
+@app.post("/api/interactions/answer/text")
+def answer_text(body:QuestionInteraction):
+ return process_question_answer(body,"questionnaire_typed")
+def process_question_answer(body:QuestionInteraction,source_type:str):
+ application_id=body.application_id or body.session_id
+ if not application_id or not repo.exists(application_id):raise HTTPException(404,{"code":"application_not_found","message":"The active application no longer exists."})
+ current=state(application_id)["questions"]
+ active=next((q for q in current if q["concept"]==body.question_concept and (not body.question_text or q["question"].strip()==body.question_text.strip() or body.question_text.strip() in q.get("localized_questions",{}).values() or q["concept"]==body.question_concept)),None)
+ if not active:raise HTTPException(409,{"code":"question_changed","message":"The application has moved to a different question. Please answer the current question."})
+ return process_semantic_interaction(body,source_type,{"concept":body.question_concept,"question":active["question"],"type":active["type"],"fact_id":active.get("fact_id"),"known_value":active.get("known_value"),"missing_qualifier":active.get("missing_qualifier")})
+@app.post("/api/interactions/answer/speech")
+async def answer_speech(application_id:str=Form(...),question_concept:str=Form(...),question_text:str=Form(...),language_mode:str=Form("hi-en"),file:UploadFile=File(...)):
+ content=await file.read()
+ if not content:raise HTTPException(422,{"code":"no_audio","message":"No audio was captured. Try again or type your answer."})
+ if len(content)>15_000_000:raise HTTPException(413,{"code":"audio_too_large","message":"The recording is too large."})
+ try:transcribed=speech.transcribe(content,file.filename or "answer.webm",file.content_type)
+ except SpeechServiceError as exc:raise HTTPException(503,{"code":exc.code,"message":"Couldn't hear that. Try again or type your answer.","retryable":exc.retryable}) from exc
+ result=process_question_answer(QuestionInteraction(application_id=application_id,question_concept=question_concept,question_text=question_text,language_mode=language_mode,text=transcribed.text),"questionnaire_speech")
+ audio_url=None;tts_error=None
+ try:
+  if result.get("response_text") and speech.available:
+   audio=speech.synthesize(result["response_text"],TTS_LANG.get(language_mode,"hi-IN"))
+   name=f"{uuid4()}.wav";(audio_dir/name).write_bytes(audio);audio_url=f"/api/audio/{name}"
+ except SpeechServiceError as exc: tts_error={"code":exc.code,"message":str(exc)}
+ return {**result,"transcript":transcribed.text,"detected_language":transcribed.detected_language,"audio_url":audio_url,"tts_error":tts_error}
 @app.post("/api/tts")
 def tts(body:TTSIn):
- if body.language not in LANGUAGES: raise HTTPException(422,"Unsupported language")
- try: audio=speech.synthesize(body.text,TTS_LANG[body.language])
+ language=body.language_mode or body.language or "hi-en";text=body.text.strip()
+ if body.application_id and not repo.exists(body.application_id):raise HTTPException(404,{"code":"application_not_found","message":"The active application no longer exists."})
+ if not text:raise HTTPException(422,{"code":"invalid_input","message":"There is no text to speak."})
+ if language not in LANGUAGES:raise HTTPException(422,{"code":"unsupported_language","message":"Audio is unavailable for this language mode."})
+ try: audio=speech.synthesize(text,TTS_LANG[language])
  except SpeechServiceError as exc: raise HTTPException(503,{"code":exc.code,"message":str(exc),"retryable":exc.retryable}) from exc
- return Response(audio,media_type="audio/wav",headers={"Cache-Control":"no-store"})
+ if not audio:raise HTTPException(502,{"code":"empty_audio","message":"Audio generation returned no playable content."})
+ return Response(audio,media_type="audio/wav",headers={"Cache-Control":"no-store","Content-Disposition":"inline"})
 @app.post("/api/answers")
 def answer(body:AnswerIn):
  if body.concept not in {r.concept for r in reqs}: raise HTTPException(422,"Unknown concept")
  s=repo.get(body.session_id);s.facts.append(Fact(id=str(uuid4()),concept=body.concept,value=body.value,normalized_value=body.value,status=Status.STATED,source_type="user",precision=Precision.approximate if body.approximate else Precision.exact));repo.save(s);return state(body.session_id)
+@app.post("/api/clarifications/income-period")
+def clarify_income_period(body:IncomePeriodIn):
+ if body.period not in {"monthly","annual"}:raise HTTPException(422,{"code":"invalid_income_period","message":"Choose monthly or annual, or edit the amount."})
+ if not repo.exists(body.application_id):raise HTTPException(404,{"code":"application_not_found","message":"The active application no longer exists."})
+ s=repo.get(body.application_id);apply_income_period(s,body.fact_id,body.period);return state(body.application_id)
+def apply_income_period(s:Session,fact_id:str|None,period:str,save=True):
+ target_id=fact_id or next((f.id for f in reversed(s.facts) if f.concept=="household_income"),None)
+ observation=next((f for f in s.facts if f.id==target_id and f.concept=="household_income"),None)
+ if not observation:raise HTTPException(404,{"code":"income_observation_not_found","message":"That income observation no longer exists."})
+ observation.period=period;observation.status=Status.STATED;observation.updated_at=now()
+ amount=float(observation.normalized_value);annual=amount if period=="annual" else amount*12;derived=period=="monthly"
+ fact=Fact(id=str(uuid4()),concept="annual_household_income",value=int(annual) if annual.is_integer() else annual,normalized_value=int(annual) if annual.is_integer() else annual,data_type="number",source_type="derived" if derived else "user_clarification",source_id=observation.id,status=Status.DERIVED if derived else Status.STATED,confidence=observation.confidence,precision=observation.precision,unit="INR",period="annual",source_span=observation.source_span,explicit=True,interpretation_provider=observation.interpretation_provider,derived_from_fact_ids=[observation.id],derivation=f"{observation.normalized_value} × 12" if derived else "User clarified the stated amount is annual.")
+ if save:s.facts.append(fact);repo.save(s)
+ return [fact]
 @app.post("/api/access-point/interact")
 def access_interact(body:Interaction):
- result=interact(body); st=state(body.session_id); pf=st["preflight"]
- return {"session_id":body.session_id,"ui_state":"READY" if pf["status"]=="READY" else "RESULT","response_text":result["response_text"],"application_status":"READY" if pf["status"]=="READY" else "IN_PROGRESS","resolved":pf["resolved"],"missing":pf["missing"],"uncertain":pf["uncertain"],"conflicts":pf["conflicts"],"next_question":st["next_question"],"tts_audio_url":None}
+ result=interact(body); st=result["application"]; pf=st["preflight"]
+ return {"session_id":result["application_id"],"ui_state":"READY" if pf["status"]=="READY" else "RESULT","response_text":result["response_text"],"application_status":"READY" if pf["status"]=="READY" else "IN_PROGRESS","resolved":pf["resolved"],"missing":pf["missing"],"uncertain":pf["uncertain"],"conflicts":pf["conflicts"],"next_question":st["next_question"],"tts_audio_url":None}
 @app.post("/api/corrections")
 def correction(body:CorrectionIn):
+ if body.concept not in {r.concept for r in reqs}: raise HTTPException(422,"Unknown concept")
  s=repo.get(body.session_id)
  for c in s.corrections:
-  if c.heard_value.casefold()==body.heard_value.casefold() and c.concept==body.concept: c.corrected_value=body.corrected_value;c.verified=body.verified;c.usage_count+=1;repo.save(s);return c
- c=CorrectionMemory(**body.model_dump(exclude={"session_id"}));s.corrections.append(c);repo.save(s);return c
+  if c.heard_value.casefold()==body.heard_value.casefold() and c.concept==body.concept: c.corrected_value=body.corrected_value;c.verified=body.verified;c.usage_count+=1;memory=c;break
+ else:
+  memory=CorrectionMemory(**body.model_dump(exclude={"session_id"}));s.corrections.append(memory)
+ s.facts.append(Fact(id=str(uuid4()),concept=body.concept,value=body.corrected_value,normalized_value=body.corrected_value,status=Status.STATED,source_type="user_correction",confidence=1.0,source_span=body.corrected_value,explicit=True));repo.save(s)
+ return {"correction":memory,"application":state(body.session_id)}
 @app.post("/api/documents/upload")
 async def upload(session_id:str=Form(...),document_type:str=Form(...),fixture_mode:bool=Form(False),file:UploadFile|None=File(None)):
  if document_type not in docs.FIXTURES: raise HTTPException(422,"Unsupported document type")

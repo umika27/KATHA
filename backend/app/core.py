@@ -1,4 +1,5 @@
 from .models import *
+from .concepts import QUESTION_TEXTS
 
 def _compatible(a,b):
     try: return abs(float(a)-float(b))/max(abs(float(b)),1) <= .10
@@ -9,7 +10,7 @@ def resolve(req: Requirement, session: Session):
     ev=[e for e in session.evidence if e.type in req.accepted_evidence_types]
     if not facts: return RequirementResolution(requirement_id=req.id,status=Status.MISSING,explanation=f"{req.label} is missing.",blockers=["Required information is missing."] if req.required else [])
     verified=[f for f in facts if f.status==Status.VERIFIED or f.source_type=="document"]
-    exact_user=[f for f in facts if f.source_type=="user" and f.precision==Precision.exact]
+    exact_user=[f for f in facts if f.source_type in {"user","user_statement","speech_transcript","questionnaire_typed","questionnaire_speech","user_correction"} and f.precision==Precision.exact]
     if verified and exact_user and any(not _compatible(u.normalized_value or u.value,v.normalized_value or v.value) for u in exact_user for v in verified):
         return RequirementResolution(requirement_id=req.id,status=Status.CONFLICT,matched_fact_ids=[f.id for f in facts],evidence_ids=[e.id for e in ev],explanation="An exact stated value conflicts with verified evidence.",blockers=["Resolve the conflicting values."])
     if verified and (not req.proof_required or ev):
@@ -19,15 +20,23 @@ def resolve(req: Requirement, session: Session):
     return RequirementResolution(requirement_id=req.id,status=Status.STATED,matched_fact_ids=[f.id for f in facts],evidence_ids=[e.id for e in ev],explanation="Stated by the user; proof is still needed." if req.proof_required else "Stated by the user.",blockers=["Required proof is missing."] if req.proof_required else [])
 
 def resolve_all(reqs,session): return [resolve(r,session) for r in reqs]
-def questions(reqs,resolutions):
+def questions(reqs,resolutions,session=None):
     by={r.id:r for r in reqs}; qs=[]
+    income_resolution=next((x for x in resolutions if x.requirement_id=="req-7"),None)
+    observations=[f for f in session.facts if f.concept=="household_income" and f.period=="unknown"] if session and income_resolution and income_resolution.status!=Status.VERIFIED else []
+    if observations:
+     fact=observations[-1];amount=f"{float(fact.normalized_value):,.0f}" if isinstance(fact.normalized_value,(int,float)) else str(fact.normalized_value)
+     loc_income={"hi-en":f"Yeh ₹{amount} aapke ghar ki income per month hai ya per year?","te-en":f"Ee ₹{amount} mee household income per month aa leka per year aa?","bn-en":f"Ei ₹{amount} ki apanar monthly income naki yearly income?"}
+     qs.append(Question(concept="household_income",question=f"Is ₹{amount} your household income per month or per year?",priority=0,reason="The household income amount is known, but its period is not specified.",resolves_requirement_ids=["req-7"],type="clarification",known_value=fact.normalized_value,missing_qualifier="period",fact_id=fact.id,options=["monthly","annual","edit"],localized_questions=loc_income))
     prompts={"state_of_domicile":"Which state is your permanent domicile?","annual_household_income":"What is your exact annual household income?"}
     for x in resolutions:
       r=by[x.requirement_id]
+      if r.concept=="annual_household_income" and observations:continue
       if not r.required or x.status==Status.VERIFIED or (x.status==Status.STATED and not r.proof_required): continue
       priority={Status.MISSING:1,Status.CONFLICT:2,Status.UNCERTAIN:3,Status.STATED:4}.get(x.status,5)
       q=prompts.get(r.concept, f"Please provide {r.label.lower()}." if x.status==Status.MISSING else f"Please provide proof for {r.label.lower()}.")
-      qs.append(Question(concept=r.concept,question=q,priority=priority,reason=f"This scholarship requires {r.label.lower()} and it is {x.status.value.lower()}.",resolves_requirement_ids=[r.id]))
+      loc={lang:texts[r.concept] for lang,texts in QUESTION_TEXTS.items() if r.concept in texts}
+      qs.append(Question(concept=r.concept,question=q,priority=priority,reason=f"This scholarship requires {r.label.lower()} and it is {x.status.value.lower()}.",resolves_requirement_ids=[r.id],localized_questions=loc))
     return sorted(qs,key=lambda q:(q.priority,by[q.resolves_requirement_ids[0]].order))
 def preflight(reqs,resolutions):
     counts={s:sum(x.status==s for x in resolutions) for s in Status}; blockers=[]
