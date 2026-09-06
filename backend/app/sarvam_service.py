@@ -33,8 +33,8 @@ class SarvamService:
     def document_ai_enabled(self):return bool(self.configured and self.config.sarvam_doc_ai_enabled)
     def _error(self,exc:Exception,operation:str):
         kind=type(exc).__name__;message=str(exc).casefold()
-        code="authentication_failed" if kind in {"UnauthorizedError","ForbiddenError"} or any(x in message for x in ("401","403","invalid_api_key")) else "insufficient_credits" if kind=="PaymentRequiredError" or "402" in message else "unsupported_audio" if operation=="stt" and kind in {"BadRequestError","UnprocessableEntityError","ContentTooLargeError"} else "rate_limited" if kind=="TooManyRequestsError" else "timeout" if "timeout" in message else "provider_unavailable"
-        safe={"authentication_failed":"Sarvam authentication failed.","insufficient_credits":"Sarvam credits are unavailable.","unsupported_audio":"Sarvam could not read this audio format.","rate_limited":"Sarvam is rate-limiting requests.","timeout":"Sarvam timed out.","provider_unavailable":"Sarvam is temporarily unavailable."}[code]
+        code="authentication_failed" if kind in {"UnauthorizedError","ForbiddenError"} or any(x in message for x in ("401","403","invalid_api_key")) else "insufficient_credits" if kind=="PaymentRequiredError" or "402" in message else "unsupported_audio" if operation=="stt" and kind in {"BadRequestError","UnprocessableEntityError","ContentTooLargeError"} else "unsupported_document" if operation=="doc_ai" and kind in {"BadRequestError","UnprocessableEntityError","ContentTooLargeError"} else "rate_limited" if kind=="TooManyRequestsError" else "timeout" if "timeout" in message else "provider_unavailable"
+        safe={"authentication_failed":"Sarvam authentication failed.","insufficient_credits":"Sarvam credits are unavailable.","unsupported_audio":"Sarvam could not read this audio format.","unsupported_document":"Sarvam could not read this document format.","rate_limited":"Sarvam is rate-limiting requests.","timeout":"Sarvam timed out.","provider_unavailable":"Sarvam is temporarily unavailable."}[code]
         return SarvamError(code,safe,code in {"rate_limited","timeout","provider_unavailable"})
     def _run(self,operation:str,model:str,fn):
         started=time.perf_counter()
@@ -59,7 +59,7 @@ class SarvamService:
         return """You are KATHA's semantic interpretation engine.
 Extract every explicitly stated or safely normalized piece of information that maps to a provided canonical concept. User statements are candidate facts even when evidence has not been supplied. Extract all supported facts from multi-fact sentences. Emit only present facts, never null placeholder facts, and normally emit at most one fact per concept.
 
-When current_question is present in the application context, interpret a short answer against current_question.concept and current_question.question. For example, a date answering a date_of_birth question maps to date_of_birth, a state name answering state_of_domicile maps to state_of_domicile, and a course name answering course_name maps to course_name. Do not require the short answer to repeat the field label. Still reject answers that cannot safely satisfy the intended concept.
+When current_question is present in the application context, interpret a short answer against current_question.concept and current_question.question. For example, a date answering a date_of_birth question maps to date_of_birth, a state name answering state_of_domicile maps to state_of_domicile, a course name answering course_name maps to course_name, and a person or account holder name answering full_name or bank_account_holder_name maps to full_name or bank_account_holder_name respectively. Do not require the short answer to repeat the field label. Still reject answers that cannot safely satisfy the intended concept.
 
 Do not answer conversationally. Do not decide eligibility, verification, readiness, or proof satisfaction. Do not fabricate or silently infer consequential information. Return facts=[] only when no provided canonical concept is present.
 
@@ -140,6 +140,11 @@ CANONICAL ONTOLOGY AND APPLICATION CONTEXT:
             if not audios:raise SarvamError("malformed_response","Sarvam returned no audio.")
             return base64.b64decode(audios[0])
         return self._run("tts",self.config.sarvam_tts_model,call)
-    def extract_document(self,*_args,**_kwargs):
+    def extract_document(self, content: bytes, filename: str, content_type: str, document_type: str):
         if not self.document_ai_enabled:raise SarvamError("not_configured","Sarvam Document AI is disabled.")
-        raise SarvamError("provider_unavailable","Document AI is prepared but not implemented.")
+        from .document_ai import SarvamDocumentAIService
+        doc_service=SarvamDocumentAIService(self.config,self.client)
+        try:
+            return doc_service.extract_document(content,filename,content_type,document_type)
+        except Exception as exc:
+            raise self._error(exc,"doc_ai") from exc

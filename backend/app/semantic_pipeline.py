@@ -84,5 +84,19 @@ class SemanticPipeline:
             if concept=="household_income" and item.period in {"monthly","weekly"} and isinstance(normalized,(int,float)):
                 multiplier=12 if item.period=="monthly" else 52;annual=normalized*multiplier
                 applied.append(Fact(id=str(uuid4()),concept="annual_household_income",value=int(annual) if float(annual).is_integer() else annual,normalized_value=int(annual) if float(annual).is_integer() else annual,data_type="number",source_type="derived",source_id=observation.id,status=Status.DERIVED,confidence=item.confidence,precision=precision,unit=item.unit or "INR",period="annual",source_span=item.source_span,explicit=True,interpretation_provider="sarvam-105b",derived_from_fact_ids=[observation.id],derivation=f"{normalized} × {multiplier}"))
-        log.info("semantic_ingestion session=%s provider=sarvam-105b fallback=false fact_count=%d ignored_count=%d",session.id,len(applied),len(ignored))
+        if question_context:
+            expected=question_context.get("concept")
+            compatible={"household_income","annual_household_income"} if expected in {"household_income","annual_household_income"} else {expected}
+            if not any(f.concept in compatible for f in applied):
+                try:
+                    _,fb_facts=self.fallback.extract(text,session.corrections,question_context=question_context)
+                    for fact in fb_facts:
+                        if fact.concept in compatible:
+                            if fact.source_type!="derived":fact.source_type=source_type
+                            fact.source_span=text;fact.interpretation_provider="deterministic-fallback"
+                            applied.append(fact);outcome.fallback_used=True;outcome.fallback_reason="contextual_concept_fallback"
+                            outcome.fallback_facts.append({"concept":fact.concept,"value":fact.value,"normalized_value":fact.normalized_value,"approximate":fact.precision==Precision.approximate,"interpretation_provider":"deterministic-fallback"})
+                except Exception as exc:
+                    log.warning("contextual_fallback_failed session=%s error=%s",session.id,type(exc).__name__)
+        log.info("semantic_ingestion session=%s provider=sarvam-105b fallback=%s fact_count=%d ignored_count=%d",session.id,str(outcome.fallback_used).lower(),len(applied),len(ignored))
         return text.strip(),applied,ignored,outcome
