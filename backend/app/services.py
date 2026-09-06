@@ -1,4 +1,5 @@
 import re
+from typing import Any
 from dataclasses import dataclass
 from uuid import uuid4
 from .models import Fact,Precision,Status
@@ -27,6 +28,42 @@ class SarvamSpeechService(SpeechService):
   text,language=self.provider.transcribe_audio(content,filename,content_type);return Transcript(text,language)
  def synthesize(self,text,language_code):
   return self.provider.synthesize_speech(text,language_code)
+def clean_person_name(text: str) -> str | None:
+ if not text: return None
+ cleaned = text.strip().strip("\"'.,")
+ if not cleaned: return None
+ if re.search(r"[\d₹$€£@#%^*+=_~<>{}\[\]\\]", cleaned): return None
+ candidate = cleaned
+ prefixes = [
+  r"^(?:bank\s+)?account\s+holder(?:\s+(?:ka|ki|ke))?(?:\s+(?:name|naam))?(?:\s+(?:is|hai))?\s+",
+  r"^(?:my\s+name\s+is|name\s+is|mera\s+naam\s+hai|mera\s+naam|naam\s+hai)\s+",
+  r"^(?:it\s+is|this\s+is|yeh\s+hai)\s+",
+ ]
+ for p in prefixes:
+  m = re.match(p, candidate, flags=re.IGNORECASE)
+  if m:
+   candidate = candidate[m.end():].strip()
+   break
+ candidate = re.sub(r"\s+(?:hai|h|ji)$", "", candidate, flags=re.IGNORECASE).strip()
+ if not candidate or len(candidate) < 2 or len(candidate) > 50: return None
+ words = candidate.split()
+ if len(words) > 5: return None
+ disallowed_exact = {
+  "income", "annual", "salary", "lakh", "lac", "crore", "rupee", "rupees", "rs", "inr",
+  "kamai", "aamdani", "paisa", "paise", "per", "month", "monthly", "year", "yearly",
+  "btech", "mtech", "bsc", "bca", "mca", "mba", "college", "school", "university",
+  "student", "study", "studying", "class", "semester", "sem",
+  "haryana", "punjab", "delhi", "bihar", "rajasthan", "telangana", "karnataka", "maharashtra",
+  "yes", "no", "haan", "nahi", "true", "false", "ok", "okay", "none", "na", "active"
+ }
+ for w in words:
+  w_clean = re.sub(r"[^\w]", "", w.casefold())
+  if w_clean in disallowed_exact: return None
+ alpha_chars = [c for c in candidate if c.isalpha()]
+ if len(alpha_chars) < 2: return None
+ if not re.match(r"^[\w\s\.\-']+$", candidate, flags=re.UNICODE): return None
+ return candidate.title()
+
 def build_speech_service(config:Settings=settings): return SarvamSpeechService(config) if config.sarvam_api_key else UnavailableSpeechService()
 class SemanticExtractionService: pass
 class RuleBasedSemanticExtractionService(SemanticExtractionService):
@@ -68,19 +105,23 @@ class RuleBasedSemanticExtractionService(SemanticExtractionService):
      if re.search(rf"\b{k}\b",low):
       add("year_of_study",v,"integer"); break
    elif q_concept=="state_of_domicile":
-    if len(clean)<=40 and not re.search(r"\d",clean):
+    if len(clean)<=40 and not re.search(r"\d",clean) and not any(w in low for w in ["income","annual","lakh","salary","rupee"]):
      add("state_of_domicile",clean.title(),"string")
    elif q_concept=="course_name":
-    if len(clean)<=40:
+    if len(clean)<=40 and not re.search(r"\d",clean) and not any(w in low for w in ["income","annual","lakh","salary","rupee"]):
      add("course_name","BTech" if clean.lower() in {"btech","b.tech"} else clean.upper() if clean.lower() in {"bsc","mtech","mba","bca","mca","ba","ma"} else clean.title(),"string")
    elif q_concept=="college_name":
-    add("college_name","VIT Vellore" if "vit" in low else clean.title(),"string")
+    if not any(w in low for w in ["income","annual","lakh","salary","rupee"]):
+     add("college_name","VIT Vellore" if "vit" in low else clean.title(),"string")
    elif q_concept=="category":
-    add("category",clean.upper() if clean.lower() in {"general","obc","sc","st","ews"} else clean.title(),"string")
+    if not any(w in low for w in ["income","annual","lakh","salary","rupee"]):
+     add("category",clean.upper() if clean.lower() in {"general","obc","sc","st","ews"} else clean.title(),"string")
    elif q_concept=="full_name":
-    if len(clean)<=50: add("full_name",clean.title(),"string")
+    name=clean_person_name(clean)
+    if name: add("full_name",name,"string")
    elif q_concept=="bank_account_holder_name":
-    if len(clean)<=50: add("bank_account_holder_name",clean.title(),"string")
+    name=clean_person_name(clean)
+    if name: add("bank_account_holder_name",name,"string")
    elif q_concept in ("household_income","annual_household_income"):
     period="monthly" if any(w in low for w in ["month","mahine","mahina","monthly","per month"]) else "annual" if any(w in low for w in ["year","annual","saal","yearly","per year"]) else "unknown"
     precision=Precision.approximate if any(w in low for w in ["around","approximately","lagbhag","करीब"]) else Precision.exact
@@ -99,12 +140,9 @@ class RuleBasedSemanticExtractionService(SemanticExtractionService):
      known=question_context.get("known_value")
      add("household_income",known,"currency",precision,period=period)
   return text.strip(),out
-class DocumentUnderstandingService: pass
-class BasicDocumentService(DocumentUnderstandingService):
- FIXTURES={"income_certificate":{"annual_household_income":382400},"student_certificate":{"student_status":"active","college_name":"VIT Vellore"},"domicile_certificate":{"state_of_domicile":"Haryana"}}
- def extract(self,document_type,text,fixture=False):
-  if fixture: return self.FIXTURES.get(document_type,{})
-  if not text: return {}
-  if document_type=="income_certificate":
-   m=re.search(r"(?:income)[^\d]{0,30}([\d,]{4,})",text,re.I); return {"annual_household_income":int(m.group(1).replace(",",""))} if m else {}
-  return {}
+from .document_ai import DocumentUnderstandingService, BasicDocumentService, SarvamDocumentAIService, DocumentPipeline
+
+def build_document_pipeline(config: Settings = settings, client: Any = None) -> DocumentPipeline:
+    sarvam_doc = SarvamDocumentAIService(config, client)
+    basic_doc = BasicDocumentService()
+    return DocumentPipeline(sarvam_doc, basic_doc)

@@ -23,7 +23,9 @@ class Settings:
     sarvam_enabled: bool = env_bool("SARVAM_ENABLED", True)
     sarvam_semantic_enabled: bool = env_bool("SARVAM_SEMANTIC_ENABLED", True)
     sarvam_tts_enabled: bool = env_bool("SARVAM_TTS_ENABLED", True)
-    sarvam_doc_ai_enabled: bool = env_bool("SARVAM_DOC_AI_ENABLED", False)
+    sarvam_doc_ai_enabled: bool = env_bool("SARVAM_DOCUMENT_AI_ENABLED", env_bool("SARVAM_DOC_AI_ENABLED", True))
+    sarvam_doc_ai_timeout_seconds: float = float(os.getenv("SARVAM_DOC_AI_TIMEOUT_SECONDS", "35"))
+    sarvam_doc_ai_poll_interval: float = float(os.getenv("SARVAM_DOC_AI_POLL_INTERVAL", "1.5"))
     environment: str = os.getenv("KATHA_ENV", "development")
 
 settings = Settings()

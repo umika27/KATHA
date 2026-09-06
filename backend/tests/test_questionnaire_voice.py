@@ -231,3 +231,114 @@ def test_localized_questions_present_in_state():
     assert "localized_questions" in q
     assert set(q["localized_questions"].keys()) == {"hi-en", "te-en", "bn-en"}
 
+def test_questionnaire_typed_contextual_bank_account_holder_name():
+    app_id = create_application()
+    res = client.post("/api/interactions/answer/text", json={
+        "application_id": app_id,
+        "question_concept": "bank_account_holder_name",
+        "question_text": "Bank account holder ka naam kya hai?",
+        "language_mode": "hi-en",
+        "text": "Umika"
+    })
+    assert res.status_code == 200
+    body = res.json()
+    applied = body["applied_facts"]
+    assert any(f["concept"] == "bank_account_holder_name" and f["normalized_value"] == "Umika" for f in applied)
+    app_state = client.get(f"/api/applications/{app_id}").json()
+    name_fact = next(f for f in app_state["facts"] if f["concept"] == "bank_account_holder_name")
+    assert name_fact["normalized_value"] == "Umika"
+    assert name_fact["source_type"] == "questionnaire_typed"
+    # Preflight and question progression recomputes: bank_account_holder_name is no longer in questions
+    assert not any(q["concept"] == "bank_account_holder_name" for q in app_state["questions"])
+
+def test_questionnaire_speech_contextual_bank_account_holder_name(monkeypatch):
+    app_id = create_application()
+    fake = FakeSpeechClient(transcript="Umika")
+    monkeypatch.setattr(main, "speech", SarvamSpeechService(Settings(sarvam_api_key="test", sarvam_enabled=True, sarvam_tts_enabled=True), fake))
+
+    res = client.post(
+        "/api/interactions/answer/speech",
+        data={
+            "application_id": app_id,
+            "question_concept": "bank_account_holder_name",
+            "question_text": "Bank account holder ka naam kya hai?",
+            "language_mode": "hi-en"
+        },
+        files={"file": ("answer.webm", b"audio-bytes", "audio/webm")}
+    )
+    assert res.status_code == 200
+    body = res.json()
+    assert body["transcript"] == "Umika"
+    applied = body["applied_facts"]
+    assert any(f["concept"] == "bank_account_holder_name" and f["normalized_value"] == "Umika" for f in applied)
+    app_state = body["application"]
+    name_fact = next(f for f in app_state["facts"] if f["concept"] == "bank_account_holder_name")
+    assert name_fact["normalized_value"] == "Umika"
+    assert name_fact["source_type"] == "questionnaire_speech"
+    # Progression
+    assert not any(q["concept"] == "bank_account_holder_name" for q in app_state["questions"])
+
+def test_questionnaire_unrelated_income_answer_rejected_for_bank_account_holder_name():
+    app_id = create_application()
+    res = client.post("/api/interactions/answer/text", json={
+        "application_id": app_id,
+        "question_concept": "bank_account_holder_name",
+        "question_text": "Bank account holder ka naam kya hai?",
+        "language_mode": "hi-en",
+        "text": "My annual income is 400000"
+    })
+    assert res.status_code == 200
+    body = res.json()
+    # Must NOT store "My annual income is 400000" as bank_account_holder_name
+    assert not any(f["concept"] == "bank_account_holder_name" for f in body["applied_facts"])
+    app_state = client.get(f"/api/applications/{app_id}").json()
+    assert not any(f["concept"] == "bank_account_holder_name" for f in app_state["facts"])
+    # Bank account holder name remains in questions because it was not answered
+    assert any(q["concept"] == "bank_account_holder_name" for q in app_state["questions"])
+
+def test_questionnaire_contextual_fallback_when_provider_returns_empty_facts(monkeypatch):
+    app_id = create_application()
+    # Simulate a provider that returns 200 OK with facts=[] (e.g. Sarvam model failed to extract fact for 1-word answer)
+    from app.semantic import SemanticExtraction, SemanticOutcome
+    class MockEmptyProvider:
+        configured = True
+        speech_enabled = True
+        semantic_enabled = True
+        tts_enabled = True
+        document_ai_enabled = True
+        def extract_semantic_facts(self, text, context):
+            return SemanticOutcome(
+                extraction=SemanticExtraction(
+                    facts=[],
+                    uncertainties=[],
+                    unmapped_information=[],
+                    clarification_needed=False,
+                    clarification_reason=None,
+                    language_detected=None
+                ),
+                provider="mock-sarvam",
+                semantic_success=True,
+                candidate_fact_count=0,
+                fallback_used=False
+            )
+        def generate_response(self, *args, **kwargs):
+            return "Mock response"
+
+    pipe = main.SemanticPipeline(MockEmptyProvider(), main.extractor)
+    monkeypatch.setattr(main, "semantic_pipeline", pipe)
+
+    res = client.post("/api/interactions/answer/text", json={
+        "application_id": app_id,
+        "question_concept": "bank_account_holder_name",
+        "question_text": "Bank account holder ka naam kya hai?",
+        "language_mode": "hi-en",
+        "text": "Umika"
+    })
+    assert res.status_code == 200
+    body = res.json()
+    applied = body["applied_facts"]
+    assert any(f["concept"] == "bank_account_holder_name" and f["normalized_value"] == "Umika" for f in applied)
+    app_state = client.get(f"/api/applications/{app_id}").json()
+    assert any(f["concept"] == "bank_account_holder_name" and f["normalized_value"] == "Umika" for f in app_state["facts"])
+    assert not any(q["concept"] == "bank_account_holder_name" for q in app_state["questions"])
+
